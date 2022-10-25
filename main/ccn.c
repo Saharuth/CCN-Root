@@ -460,11 +460,11 @@ void test_task(void *pvParameter){
         ESP_ERROR_CHECK(esp_wifi_ap_get_sta_list(&my_child));
 
         if (line1 == 0)
-            attr_interest_message = "video";
+            attr_interest_message = "video1";
         if (line1 == 1)
             attr_interest_message = "sensor";
         if (line2 == 0)
-            region_interest_message = "home/living";
+            region_interest_message = "home/living1";
         if (line2 == 1)
             region_interest_message = "home/kitchen";
         if (line2 == 2)
