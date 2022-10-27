@@ -462,9 +462,9 @@ void test_task(void *pvParameter){
         if (line1 == 0)
             attr_interest_message = "video1";
         if (line1 == 1)
-            attr_interest_message = "sensor";
+            attr_interest_message = "light1";
         if (line2 == 0)
-            region_interest_message = "home/living1";
+            region_interest_message = "home/living";
         if (line2 == 1)
             region_interest_message = "home/kitchen";
         if (line2 == 2)
