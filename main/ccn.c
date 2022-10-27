@@ -150,10 +150,16 @@ wifi_promiscuous_filter_t filter_pkt = {
 /*############# define function ################*/
 void sendlayer(int mylayer, uint8_t child_mac[6]);
 void fib_table(char attr_node[], int attr_len, char region_node[], int region_len, uint8_t next_hop[6]);
+void icache_table(int id_pkt, int timestp_pkt[], char attr_pkt[], int attr_len, char region_pkt[], int region_len, int et_pkt[], int sr_pkt);
 void reset_FIB_table();
 void show_FIB_table();
+void show_icacahe_table();
+void update_icache(void *pvParameter);
 void sniffer_task(void *pvParameter);
 void test_task(void *pvParameter);
+void forward_interest(char attr_in[], int attr_len, char region_in[], int region_len, int et_in, int sr_in, int idx);
+int FIB_check(char attr_pkt[], int attr_len, char region_pkt[], int region_len);
+int Icache_check(char attr_pkt[], int attr_len, char region_pkt[], int region_len);
 /*############# --------------- ################*/
 
 const char * wifi_sniffer_packet_type2str(wifi_promiscuous_pkt_type_t type)
@@ -176,7 +182,7 @@ void wifi_sniffer_packet_handler(void* buff, wifi_promiscuous_pkt_type_t type)
     const wifi_ieee80211_packet_t *ipkt = (wifi_ieee80211_packet_t *)ppkt->payload;
     const wifi_ieee80211_mac_hdr_t *hdr = &ipkt->hdr;
 
-    int check[3] = {0,0,0};
+    int check[3];
     bool match = false;
 
     if ((hdr->addr3[0] != test_mac[0]) || (hdr->addr3[1] != test_mac[1])
@@ -186,18 +192,11 @@ void wifi_sniffer_packet_handler(void* buff, wifi_promiscuous_pkt_type_t type)
     }
 
     for (int i=0; i<my_child.num; i++){
-        check[0] = 0;
-        check[1] = 0;
-        check[2] = 0;
-        for (int j=0; j<6; j++){
-            if ( hdr->addr1[j] == my_mac_ap[j])
-                check[0]++;
-            if ( hdr->addr2[j] == my_child.sta[i].mac[j])
-                check[1]++;
-            if ( hdr->addr3[j] == test_mac[j])
-                check[2]++;
-        }
-        if (check[0] == 6 && check[1] == 6 && check[2] == 6)
+        check[0] = memcmp( hdr->addr1, my_mac_ap, 6);
+        check[1] = memcmp( hdr->addr2, my_child.sta[i].mac, 6);
+        check[2] = memcmp( hdr->addr3, test_mac, 6);
+
+        if (check[0] == 0 && check[1] == 0 && check[2] == 0)
             match = true;
     }
 
@@ -209,14 +208,17 @@ void wifi_sniffer_packet_handler(void* buff, wifi_promiscuous_pkt_type_t type)
         char region_n[100];
         uint8_t node_addr[6];
         
-        memcpy(attr_n, &ipkt->payload[3], ipkt->payload[2]);
-        memcpy(region_n, &ipkt->payload[3+(ipkt->payload[2])+1], ipkt->payload[3+(ipkt->payload[2])]);
+        memcpy( attr_n, &ipkt->payload[3], ipkt->payload[2]);
+        memcpy( &attr_n[ipkt->payload[2]], "\n", 2);
+        memcpy( region_n, &ipkt->payload[3+(ipkt->payload[2])+1], ipkt->payload[3+(ipkt->payload[2])]);
+        memcpy( &region_n[ipkt->payload[3+(ipkt->payload[2])]], "\n", 2);
+        memcpy( node_addr, hdr->addr2, 6);
         
-        for(int k=0; k<6; k++)
-            node_addr[k] = hdr->addr2[k];
-        ESP_LOGW(TAG, "PACKET TYPE= Intro Packet, RSSI=%02d ATTR: %s REGION: %s", ppkt->rx_ctrl.rssi, attr_n, region_n);
+        ESP_LOGW(TAG, "PACKET TYPE= Intro Packet, RSSI=%02d MAC:"MACSTR"", ppkt->rx_ctrl.rssi, MAC2STR(hdr->addr2));
+        //ESP_LOGW(TAG, "PACKET TYPE= Intro Packet, RSSI=%02d ATTR: %s REGION: %s", ppkt->rx_ctrl.rssi, attr_n, region_n);
         
         fib_table(attr_n, ipkt->payload[2], region_n, ipkt->payload[3+(ipkt->payload[2])], node_addr);
+        ESP_LOGI(TAG, "FIB Table Size:%d Child:%d", my_fib.number_entry, my_child.num);
         show_FIB_table();
         return;
     }
@@ -299,8 +301,39 @@ esp_err_t esp_comm_p2p_start(void)
         is_comm_p2p_started = true;
         xTaskCreate(&test_task, "test_task", 3072, NULL, 5, NULL);
         xTaskCreate(&sniffer_task, "sniffer_task", 3072, NULL, 5, NULL);
+        xTaskCreate(&update_icache, "update_icache", 1024, NULL, 5, NULL);
     }
     return ESP_OK;
+}
+
+int FIB_check(char attr_pkt[], int attr_len, char region_pkt[], int region_len){
+    
+    int check[2] = {1,1};
+
+    for (int i=0; i<my_fib.number_entry; i++){
+        check[0] = memcmp( attr_pkt, my_fib.entry[i].ATTR, attr_len);
+        check[1] = memcmp( region_pkt, my_fib.entry[i].REGION, region_len);
+
+        if ( check[0] == 0 && check[1] == 0){
+            return i;
+        }
+    }
+    return 99;
+}
+
+int Icache_check(char attr_pkt[], int attr_len, char region_pkt[], int region_len){
+
+    int check[2] = {1,1};
+
+    for (int i=0; i<my_icache.number_entry; i++){
+        check[0] = memcmp( attr_pkt, my_icache.entry[i].ATTR, attr_len);
+        check[1] = memcmp( region_pkt, my_icache.entry[i].REGION, region_len);
+
+        if ( check[0] == 0 && check[1] == 0){
+            return i;
+        }
+    }
+    return 99;
 }
 
 void reset_FIB_table(){
@@ -314,59 +347,41 @@ void reset_FIB_table(){
 void fib_table(char attr_node[], int attr_len, char region_node[], int region_len, uint8_t next_hop[6]){
 
     int check[3];
-    int index[3] = {0, 0, 0};
     bool match[3] = {false, false, false};
 
     //printf("%d\n", my_fib.number_entry);
 
     for (int i = 0; i<my_fib.number_entry; i++){
-        check[0] = 0;
-        check[1] = 0;
-        for (int j=0; j<attr_len; j++){
-            if (attr_node[j] == my_fib.entry[i].ATTR[j] ){
-                check[0]++;
-            }
-        }
-        for (int k=0; k<region_len; k++){
-            if (region_node[k] == my_fib.entry[i].REGION[k] ){
-                check[1]++;
-            }
-        }
-        if( check[0] == attr_len ){
+        check[0] = memcmp( attr_node, my_fib.entry[i].ATTR, attr_len);
+        check[1] = memcmp( region_node, my_fib.entry[i].REGION, region_len);
+    
+        if( check[0] == 0 ){
             match[0] = true;
-            index[0] = i;
         }
-        if (check[1] == region_len){
+        if (check[1] == 0){
             match[1] = true;
-            index[1] = i;
         }
         //printf("%d %d\n", match[0], match[1]);
         if (match[0] && match[1]){
             for (int l=0; l<my_fib.entry[i].number_ds; l++){
-                check[2] = 0;
-                for (int m=0; m<6; m++){
-                    if (next_hop[m] == my_fib.entry[i].DS[l][m]){
-                        check[2]++;
-                    }
-                }
-                if (check[2] == 6){
+                check[2] = memcmp( next_hop, my_fib.entry[i].DS[l], 6);
+                if (check[2] == 0){
                     match[2] = true;
                     return;
                 }
             }
             if (!match[2]){
-                for (int n=0; n<6; n++)
-                    my_fib.entry[i].DS[my_fib.entry[i].number_ds][n] = next_hop[n];
+                memcpy( my_fib.entry[i].DS[my_fib.entry[i].number_ds], next_hop, 6);
                 my_fib.entry[i].number_ds++;
                 return;
             }
         }
     }
     memcpy( my_fib.entry[my_fib.number_entry].ATTR, attr_node, attr_len);
+    memcpy( &my_fib.entry[my_fib.number_entry].ATTR[attr_len], "\n", 2);
     memcpy( my_fib.entry[my_fib.number_entry].REGION, region_node, region_len);
-    for (int i=0; i<6; i++){
-        my_fib.entry[my_fib.number_entry].DS[my_fib.entry[my_fib.number_entry].number_ds][i] = next_hop[i];
-    }
+    memcpy( &my_fib.entry[my_fib.number_entry].REGION[region_len], "\n", 2);
+    memcpy( my_fib.entry[my_fib.number_entry].DS[my_fib.entry[my_fib.number_entry].number_ds], next_hop, 6);
     my_fib.entry[my_fib.number_entry].number_ds++;
     my_fib.number_entry++;
 }
@@ -377,8 +392,13 @@ void show_FIB_table(){
     printf("|\tATTR\t\t|\tREGION\t|\t\tDS\t\t|\n");
     printf("------------------------------------------------------------------------\n");
     for (int i=0; i<my_fib.number_entry; i++){
-        printf("|\t%s\t",my_fib.entry[i].ATTR);
-        printf("|\t%s\t",my_fib.entry[i].REGION);
+        printf("|\t");
+        for ( int k=0; k<(strlen(my_fib.entry[i].ATTR)-1); k++)
+            printf("%c",my_fib.entry[i].ATTR[k]);
+        printf("\t|\t");
+        for ( int k=0; k<(strlen(my_fib.entry[i].REGION)-1); k++)
+            printf("%c",my_fib.entry[i].REGION[k]);
+        printf("\t");
         for (int j=0; j<my_fib.entry[i].number_ds; j++){
             if (j > 0){
                 printf("\n\t\t\t\t\t|\t"MACSTR"\t|", MAC2STR(my_fib.entry[i].DS[j]));
@@ -390,6 +410,62 @@ void show_FIB_table(){
         printf("\n");
     }
     printf("------------------------------------------------------------------------\n");
+}
+
+void icache_table(int id_pkt, int timestp_pkt[], char attr_pkt[], int attr_len, char region_pkt[], int region_len, int et_pkt[], int sr_pkt){
+
+    int check[4] = {1,1,1,1};
+    for (int i = 0; i<my_icache.number_entry; i++){
+        check[0] = memcmp( attr_pkt, my_icache.entry[i].ATTR, attr_len);
+        check[1] = memcmp( region_pkt, my_icache.entry[i].REGION, region_len);
+        check[2] = my_icache.entry[i].ID - id_pkt;
+        check[3] = my_icache.entry[i].SR - sr_pkt;
+        if (check[0] == 0 && check[1] == 0 && check[2] == 0 && check[3] == 0){
+            for (int j=0; j<5; j++){
+                my_icache.entry[i].TS[j] = timestp_pkt[j];
+                my_icache.entry[i].ET[j] = et_pkt[j];
+            }
+            return;
+        }
+    }
+
+    memcpy( my_icache.entry[my_icache.number_entry].ATTR, attr_pkt, attr_len);
+    memcpy( &my_icache.entry[my_icache.number_entry].ATTR[attr_len], "\n", 2);
+    memcpy( my_icache.entry[my_icache.number_entry].REGION, region_pkt, region_len);
+    memcpy( &my_icache.entry[my_icache.number_entry].REGION[region_len], "\n", 2);
+    for (int i=0; i<5; i++){
+        my_icache.entry[my_icache.number_entry].TS[i] = timestp_pkt[i];
+        my_icache.entry[my_icache.number_entry].ET[i] = et_pkt[i];
+    }
+    my_icache.entry[my_icache.number_entry].ID = id_pkt;
+    my_icache.entry[my_icache.number_entry].SR = sr_pkt;
+    my_icache.number_entry++;
+    return;
+}
+
+void show_icacahe_table(){
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    printf("######################################### Icahce Table #############################################\n");
+    printf("| ID |\tTimestamp\t|  ATTR  |\tREGION\t|\tExpiration Time\t|\tSR\t|\n");
+    printf("----------------------------------------------------------------------------------------------------\n");
+    for (int i=0; i<my_icache.number_entry; i++){
+        printf("| %d | ", my_icache.entry[i].ID);
+        for (int j=0; j<5; j++)
+            printf("%02d:", my_icache.entry[i].TS[j]);
+        printf(" | ");
+        for (int j=0; j<(strlen(my_icache.entry[i].ATTR)-1); j++)
+            printf("%c", my_icache.entry[i].ATTR[j]);
+        printf(" |\t");
+        for (int j=0; j<(strlen(my_icache.entry[i].REGION)-1); j++)
+            printf("%c", my_icache.entry[i].REGION[j]);
+        printf("\t| ");
+        for (int j=0; j<5; j++)
+            printf("%02d:", my_icache.entry[i].ET[j]);
+        printf(" ");
+        printf("|\t%d\t|", my_icache.entry[i].SR);
+        printf("\n");
+    }
+    printf("----------------------------------------------------------------------------------------------------\n");
 }
 
 void showTable(wifi_ap_record_t AP_info[], uint16_t AP_count)
@@ -433,6 +509,35 @@ void sendlayer(int mylayer, uint8_t child_mac[6]){
     esp_wifi_80211_tx(WIFI_IF_AP, beacon_layer, sizeof(wifi_hdr) + strlen(message), true);
 }
 
+void forward_interest(char attr_in[], int attr_len, char region_in[], int region_len, int et_in, int sr_in, int idx){
+    ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, my_mac_sta));
+    ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_AP, my_mac_ap));
+    ESP_ERROR_CHECK(esp_wifi_ap_get_sta_list(&my_child));
+
+    memcpy( forward_interest_buf, wifi_hdr, 32);
+    forward_interest_buf[0] = 0x08;
+    forward_interest_buf[1] = 0x02;
+    forward_interest_buf[32] = attr_len + region_len + sizeof(interest_hdr);
+    forward_interest_buf[33] = 0x11;
+    forward_interest_buf[34] = attr_len;
+    memcpy( &forward_interest_buf[35], attr_in, attr_len);
+    forward_interest_buf[35+attr_len] = region_len;
+    memcpy( &forward_interest_buf[35+attr_len+1], region_in, region_len);
+    forward_interest_buf[35+attr_len+1+region_len] = et_in >> 8;
+    forward_interest_buf[35+attr_len+1+region_len+1] = et_in & 0x00FF;
+    forward_interest_buf[35+attr_len+1+region_len+2] = sr_in >> 8;
+    forward_interest_buf[35+attr_len+1+region_len+3] = sr_in & 0x00FF;
+
+    for (int i=0; i<my_fib.entry[idx].number_ds; i++){
+        for(int j=0; j<6; j++){
+            forward_interest_buf[j+4] = my_fib.entry[idx].DS[i][j];
+            forward_interest_buf[j+10] = my_mac_ap[j];
+        }
+        esp_wifi_80211_tx(WIFI_IF_AP, forward_interest_buf, sizeof(wifi_hdr) + attr_len + region_len + sizeof(interest_hdr), true);
+        ESP_LOGI(TAG, "Forward Interest to "MACSTR"", MAC2STR(my_fib.entry[idx].DS[i]));
+    }
+}
+
 void sniffer_task(void *pvParameter){
     ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
     while (true){
@@ -444,12 +549,15 @@ void sniffer_task(void *pvParameter){
 
 void test_task(void *pvParameter){
     
-    char *attr_interest_message = NULL;
-    char *region_interest_message = NULL;
+    char attr_interest_message[100];
+    char region_interest_message[100];
+    int attr_interest_len = 0;
+    int region_interest_len = 0;
     int line1 = 0;
     int line2 = 0;
     int ET_interval = 30000;
     int sr_pkt = 3600;
+    int index[2];
 
     vTaskDelay(60000 / portTICK_PERIOD_MS);
 
@@ -459,47 +567,6 @@ void test_task(void *pvParameter){
         ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_AP, my_mac_ap));
         ESP_ERROR_CHECK(esp_wifi_ap_get_sta_list(&my_child));
 
-        if (line1 == 0)
-            attr_interest_message = "video1";
-        if (line1 == 1)
-            attr_interest_message = "light1";
-        if (line2 == 0)
-            region_interest_message = "home/living";
-        if (line2 == 1)
-            region_interest_message = "home/kitchen";
-        if (line2 == 2)
-            region_interest_message = "home/bedroom";
-
-        //int64_t t1 = esp_timer_get_time();
-        //ESP_LOGW(TAG, "%lld",t1);
-        
-        for(int i=0;i<my_child.num;i++){
-
-            memcpy( forward_interest_buf, wifi_hdr, 32);
-            forward_interest_buf[0] = 0x08;
-            forward_interest_buf[1] = 0x02; //AP->STA
-            forward_interest_buf[22] = ((line1*10)+line2) >> 8;
-            forward_interest_buf[23] = ((line1*10)+line2) & 0x00FF;
-            forward_interest_buf[32] = sizeof(interest_hdr) + strlen(attr_interest_message) + strlen(region_interest_message);
-            forward_interest_buf[1+32] = 0x11;
-            forward_interest_buf[2+32] = strlen(attr_interest_message);
-            memcpy( &forward_interest_buf[3+32], attr_interest_message, strlen(attr_interest_message));
-            forward_interest_buf[32+3+strlen(attr_interest_message)] = strlen(region_interest_message);
-            memcpy( &forward_interest_buf[32+3+strlen(attr_interest_message)+1], region_interest_message, strlen(region_interest_message));
-            forward_interest_buf[32+3+strlen(attr_interest_message)+1+strlen(region_interest_message)] = ET_interval >> 8;
-            forward_interest_buf[32+3+strlen(attr_interest_message)+1+strlen(region_interest_message)+1] = ET_interval & 0x00FF;
-            forward_interest_buf[32+3+strlen(attr_interest_message)+1+strlen(region_interest_message)+2] = sr_pkt >> 8;
-            forward_interest_buf[32+3+strlen(attr_interest_message)+1+strlen(region_interest_message)+3] = sr_pkt & 0x00FF;
-            for(int j = 0; j<6; j++){
-                forward_interest_buf[j+4] = my_child.sta[i].mac[j];
-                forward_interest_buf[j+10] = my_mac_ap[j];
-            }
-            esp_wifi_80211_tx(WIFI_IF_AP, forward_interest_buf, sizeof(wifi_hdr) + sizeof(interest_hdr) + strlen(attr_interest_message) + strlen(region_interest_message), true);
-            ESP_LOGI(TAG, "Interest Packet: ATTR:%s REGION:%s", attr_interest_message, region_interest_message);
-            vTaskDelay(10000 / portTICK_PERIOD_MS);
-        }
-        
-        line1++;
         if (line1 == 2){
             line2++;
             line1 = 0;
@@ -508,10 +575,134 @@ void test_task(void *pvParameter){
             line2 = 0;
         }
 
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        if (line1 == 0){
+            memcpy( attr_interest_message, "video", 5);
+            memcpy( &attr_interest_message[5], "\n", 2);
+            attr_interest_len = 5;
+        }
+        if (line1 == 1){
+            memcpy( attr_interest_message, "light", 5);
+            memcpy( &attr_interest_message[5], "\n", 2);
+            attr_interest_len = 5;
+        }
+        if (line2 == 0){
+            memcpy( region_interest_message, "home/living", 11);
+            memcpy( &region_interest_message[11], "\n", 2);
+            region_interest_len = 11;
+        }
+        if (line2 == 1){
+            memcpy( region_interest_message, "home/kitchen", 12);
+            memcpy( &region_interest_message[12], "\n", 2);
+            region_interest_len = 12;
+        }
+        if (line2 == 2){
+            memcpy( region_interest_message, "home/bedroom", 12);
+            memcpy( &region_interest_message[12], "\n", 2);
+            region_interest_len = 12;
+        }
+
+        //int64_t t1 = esp_timer_get_time();
+        //ESP_LOGW(TAG, "%lld",t1);
+        ESP_LOGI(TAG, "Interest Packet: ATTR:%s REGION:%s", attr_interest_message, region_interest_message);
+
+        int id_pkt = attr_interest_len + region_interest_len + sizeof(interest_hdr);
+        int current_time[5] = {
+            (((esp_timer_get_time())/1000000)/60)/60,
+            (((esp_timer_get_time())/1000000)/60)%60,
+            (((esp_timer_get_time())/1000000)%60),
+            ((esp_timer_get_time())/1000)%1000,
+            ((esp_timer_get_time())%1000)
+        };
+        int stop_time[5] = {
+            ((((esp_timer_get_time())+(ET_interval*1000))/1000000)/60)/60,
+            ((((esp_timer_get_time())+(ET_interval*1000))/1000000)/60)%60,
+            ((((esp_timer_get_time())+(ET_interval*1000))/1000000)%60),
+            (((esp_timer_get_time())+(ET_interval*1000))/1000)%1000,
+            (((esp_timer_get_time())+(ET_interval*1000))%1000)
+        };
+
+        index[0] = Icache_check( attr_interest_message, attr_interest_len, region_interest_message, region_interest_len);
+        if ( index[0] == 99){
+            index[1] = FIB_check( attr_interest_message, attr_interest_len, region_interest_message, region_interest_len);
+            if ( index[1] == 99){
+                ESP_LOGI(TAG, "Icache Table Size:%d Child:%d", my_icache.number_entry, my_child.num);
+                line1++;
+                memset( region_interest_message, ' ', region_interest_len);
+                memset( attr_interest_message, ' ', attr_interest_len);
+                vTaskDelay(60000 / portTICK_PERIOD_MS);
+                continue;
+            }
+            else {
+                forward_interest( attr_interest_message, attr_interest_len, region_interest_message, 
+                            region_interest_len, ET_interval, sr_pkt, index[1]);
+                icache_table( id_pkt, current_time, attr_interest_message, attr_interest_len, 
+                            region_interest_message, region_interest_len, stop_time, sr_pkt);
+                ESP_LOGI(TAG, "Icache Table Size:%d Child:%d", my_icache.number_entry, my_child.num);
+                show_icacahe_table();
+            }
+        }
+        else {
+            icache_table( id_pkt, current_time, attr_interest_message, attr_interest_len, 
+                            region_interest_message, region_interest_len, stop_time, sr_pkt);
+            ESP_LOGI(TAG, "Icache Table Size:%d Child:%d", my_icache.number_entry, my_child.num);
+            show_icacahe_table();
+        }
+        line1++;
+
+        vTaskDelay(60000 / portTICK_PERIOD_MS);
         continue;
     }
     vTaskDelete(NULL);
+}
+
+void update_icache(void *pvParameter){
+
+    while (true){
+
+        for( int i=0; i<my_icache.number_entry; i++){
+            uint64_t current_time = esp_timer_get_time();
+            uint64_t expir_time = (my_icache.entry[i].ET[0]*60*60*1000*1000)
+                    + (my_icache.entry[i].ET[1]*60*1000*1000) + (my_icache.entry[i].ET[2]*1000*1000)
+                    + (my_icache.entry[i].ET[3]*1000) + (my_icache.entry[i].ET[4]);
+            if (current_time >= expir_time){
+                for (int j=i; j<my_icache.number_entry; j++){
+                    if (my_icache.number_entry - j == 1){
+                        my_icache.entry[j].ID = 0;
+                        my_icache.entry[j].SR = 0;
+                        for( int k=0; k<5; k++){
+                            my_icache.entry[j].TS[k] = 0;
+                            my_icache.entry[j].ET[k] = 0;
+                        }
+                        memmove( my_icache.entry[j].ATTR, " ", strlen(my_icache.entry[j].ATTR));
+                        memmove( my_icache.entry[j].REGION, " ", strlen(my_icache.entry[j].REGION));
+                    }
+                    else{
+                        my_icache.entry[j].ID = my_icache.entry[j+1].ID;
+                        my_icache.entry[j].SR = my_icache.entry[j+1].SR;
+                        for( int k=0; k<5; k++){
+                            my_icache.entry[j].TS[k] = my_icache.entry[j+1].TS[k];
+                            my_icache.entry[j].ET[k] = my_icache.entry[j+1].ET[k];
+                        }
+                        if ( strlen(my_icache.entry[j].ATTR) > strlen(my_icache.entry[j+1].ATTR)){
+                            memmove( my_icache.entry[j].ATTR, my_icache.entry[j+1].ATTR, strlen(my_icache.entry[j].ATTR));
+                        }
+                        if ( strlen(my_icache.entry[j].ATTR) <= strlen(my_icache.entry[j+1].ATTR)){
+                            memmove( my_icache.entry[j].ATTR, my_icache.entry[j+1].ATTR, strlen(my_icache.entry[j+1].ATTR));
+                        }
+                        if ( strlen(my_icache.entry[j].REGION) > strlen(my_icache.entry[j+1].REGION)){
+                            memmove( my_icache.entry[j].REGION, my_icache.entry[j+1].REGION, strlen(my_icache.entry[j].REGION));
+                        }
+                        if ( strlen(my_icache.entry[j].REGION) <= strlen(my_icache.entry[j+1].REGION)){
+                            memmove( my_icache.entry[j].REGION, my_icache.entry[j+1].REGION, strlen(my_icache.entry[j+1].REGION));
+                        }
+                    }
+                }
+                my_icache.number_entry--;
+                i--;
+            }
+        }
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
 }
 
 int wifi_scan_router_rssi(void)
