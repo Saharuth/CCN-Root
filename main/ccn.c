@@ -219,7 +219,7 @@ void wifi_sniffer_packet_handler(void* buff, wifi_promiscuous_pkt_type_t type)
         
         fib_table(attr_n, ipkt->payload[2], region_n, ipkt->payload[3+(ipkt->payload[2])], node_addr);
         ESP_LOGI(TAG, "FIB Table Size:%d Child:%d", my_fib.number_entry, my_child.num);
-        show_FIB_table();
+        //show_FIB_table();
         return;
     }
     if (ipkt->payload[1] == 0x01 && match){
@@ -347,11 +347,12 @@ void reset_FIB_table(){
 void fib_table(char attr_node[], int attr_len, char region_node[], int region_len, uint8_t next_hop[6]){
 
     int check[3];
-    bool match[3] = {false, false, false};
+    
 
     //printf("%d\n", my_fib.number_entry);
 
     for (int i = 0; i<my_fib.number_entry; i++){
+        bool match[3] = {false, false, false};
         check[0] = memcmp( attr_node, my_fib.entry[i].ATTR, attr_len);
         check[1] = memcmp( region_node, my_fib.entry[i].REGION, region_len);
     
