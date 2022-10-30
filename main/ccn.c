@@ -160,6 +160,7 @@ void test_task(void *pvParameter);
 void forward_interest(char attr_in[], int attr_len, char region_in[], int region_len, int et_in, int sr_in, int idx);
 int FIB_check(char attr_pkt[], int attr_len, char region_pkt[], int region_len);
 int Icache_check(char attr_pkt[], int attr_len, char region_pkt[], int region_len);
+esp_err_t esp_comm_p2p_start(void);
 /*############# --------------- ################*/
 
 const char * wifi_sniffer_packet_type2str(wifi_promiscuous_pkt_type_t type)
@@ -291,6 +292,23 @@ static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED){
+        ESP_LOGW(TAG, "<WIFI_EVENT_STA_CONNECTED>");
+        sniffer_running = true;
+        ESP_ERROR_CHECK(esp_comm_p2p_start());
+    }
+    else if ( event_base == WIFI_EVENT && event_id == WIFI_EVENT_ACTION_TX_STATUS){
+        ESP_LOGW(TAG, "<WIFI_EVENT_ACTION_TX_STATUS>");
+    }
+    else if ( event_base == WIFI_EVENT && event_id == WIFI_EVENT_CONNECTIONLESS_MODULE_WAKE_INTERVAL_START){
+        ESP_LOGW(TAG, "<WIFI_EVENT_CONNECTIONLESS_MODULE_WAKE_INTERVAL_START>");
+    }
+    else if ( event_base == WIFI_EVENT && event_id == WIFI_EVENT_ROC_DONE){
+        ESP_LOGW(TAG, "<WIFI_EVENT_ROC_DONE>");
+    }
+    else if ( event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_BEACON_TIMEOUT){
+        ESP_LOGW(TAG, "<WIFI_EVENT_STA_BEACON_TIMEOUT>");
     }
 }
 
@@ -852,8 +870,6 @@ void wifi_init_sta(void){
      * happened. */
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "connected to AP");
-        sniffer_running = true;
-        ESP_ERROR_CHECK(esp_comm_p2p_start());
     }
     else if (bits & WIFI_FAIL_BIT) {
         ESP_LOGI(TAG, "Failed to connect to AP");
